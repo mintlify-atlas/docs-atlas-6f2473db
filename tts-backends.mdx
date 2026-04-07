@@ -1,0 +1,156 @@
+---
+title: "TTS backends"
+description: "Platform-aware text-to-speech: MLX on Apple Silicon, ONNX on Linux."
+---
+
+Parlor's TTS layer is built around a thin `TTSBackend` abstraction in `tts.py`. At startup, `tts.load()` inspects the platform and available packages, then returns the best backend for your machine. The rest of the server only ever calls `.generate()` and reads `.sample_rate` — it never needs to know which backend is running.
+
+## Unified interface
+
+```python
+class TTSBackend:
+    sample_rate: int = 24000
+
+    def generate(self, text: str, voice: str = "af_heart", speed: float = 1.1) -> np.ndarray:
+        ...
+```
+
+| Property / method | Type | Description |
+| ----------------- | ---- | ----------- |
+| `sample_rate` | `int` | Output sample rate in Hz. Both backends return 24 000. |
+| `generate(text, voice, speed)` | `np.ndarray` | Synthesize `text` and return a float32 PCM array. |
+
+The server converts the returned array to 16-bit PCM before sending it over the WebSocket:
+
+```python
+pcm_int16 = (pcm * 32767).clip(-32768, 32767).astype(np.int16)
+```
+
+---
+
+## Backends
+
+<Tabs>
+  <Tab title="MLX (Apple Silicon)">
+    ### MLXBackend
+
+    The MLX backend runs Kokoro on the Apple GPU using the `mlx-audio` package. It is the default on Apple Silicon Macs and provides the lowest latency for TTS on that hardware.
+
+    **Model:** `mlx-community/Kokoro-82M-bf16`
+
+    ```python
+    class MLXBackend(TTSBackend):
+        def __init__(self):
+            from mlx_audio.tts.generate import load_model
+
+            self._model = load_model("mlx-community/Kokoro-82M-bf16")
+            self.sample_rate = self._model.sample_rate
+            # Warmup: triggers pipeline init (phonemizer, spacy, etc.)
+            list(self._model.generate(text="Hello", voice="af_heart", speed=1.0))
+
+        def generate(self, text: str, voice: str = "af_heart", speed: float = 1.1) -> np.ndarray:
+            results = list(self._model.generate(text=text, voice=voice, speed=speed))
+            return np.concatenate([np.array(r.audio) for r in results])
+    ```
+
+    The constructor performs a warmup call (`generate("Hello", ...)`) immediately after loading the model. This forces the phonemizer and spaCy NLP pipeline to initialize so that the first real request is not delayed.
+
+    <Note>
+      `sample_rate` is read from the model object rather than hardcoded, so it will adapt automatically if the underlying model changes its output rate.
+    </Note>
+  </Tab>
+  <Tab title="ONNX (Linux / fallback)">
+    ### ONNXBackend
+
+    The ONNX backend runs Kokoro via ONNX Runtime on CPU. It is the default on Linux and acts as a fallback on Mac when `mlx-audio` is not installed.
+
+    **Model:** `fastrtc/kokoro-onnx` (two files: `kokoro-v1.0.onnx` + `voices-v1.0.bin`)
+
+    ```python
+    class ONNXBackend(TTSBackend):
+        def __init__(self):
+            import kokoro_onnx
+            from huggingface_hub import hf_hub_download
+
+            model_path = hf_hub_download("fastrtc/kokoro-onnx", "kokoro-v1.0.onnx")
+            voices_path = hf_hub_download("fastrtc/kokoro-onnx", "voices-v1.0.bin")
+
+            self._model = kokoro_onnx.Kokoro(model_path, voices_path)
+            self.sample_rate = 24000
+
+        def generate(self, text: str, voice: str = "af_heart", speed: float = 1.1) -> np.ndarray:
+            pcm, _sr = self._model.create(text, voice=voice, speed=speed)
+            return pcm
+    ```
+
+    Both model files are downloaded from HuggingFace via `hf_hub_download` on first run and cached locally. The sample rate returned by `create()` is discarded because it is always 24 000 Hz.
+  </Tab>
+</Tabs>
+
+---
+
+## Platform detection
+
+The `load()` function selects a backend at server startup:
+
+```python
+def load() -> TTSBackend:
+    """Load the best available TTS backend for this platform."""
+    if _is_apple_silicon() and not os.environ.get("KOKORO_ONNX"):
+        try:
+            backend = MLXBackend()
+            print(f"TTS: mlx-audio (Apple GPU, sample_rate={backend.sample_rate})")
+            return backend
+        except ImportError:
+            print("TTS: mlx-audio not installed, falling back to kokoro-onnx")
+
+    backend = ONNXBackend()
+    print(f"TTS: kokoro-onnx (CPU, sample_rate={backend.sample_rate})")
+    return backend
+```
+
+The decision tree is:
+
+1. **Apple Silicon + `KOKORO_ONNX` not set** → try `MLXBackend`
+   - If `mlx-audio` is installed → use MLX (Apple GPU)
+   - If `mlx-audio` is not installed → fall back to `ONNXBackend`
+2. **Linux, Intel Mac, or `KOKORO_ONNX` is set** → use `ONNXBackend` directly
+
+Apple Silicon is detected with:
+
+```python
+def _is_apple_silicon() -> bool:
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+```
+
+<Tip>
+  You can force the ONNX backend on Apple Silicon by setting the `KOKORO_ONNX` environment variable to any non-empty value before starting the server:
+
+  ```bash
+  KOKORO_ONNX=1 uv run server.py
+  ```
+
+  This is useful for benchmarking or if you prefer not to install `mlx-audio`.
+</Tip>
+
+---
+
+## Sentence-level streaming
+
+The server does not synthesize the full response at once. It splits the response text into sentences first, then calls `tts_backend.generate()` once per sentence, sending each audio chunk to the browser immediately after it is ready.
+
+Splitting uses the regex `(?<=[.!?])\s+`:
+
+```python
+SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+
+def split_sentences(text: str) -> list[str]:
+    parts = SENTENCE_SPLIT_RE.split(text.strip())
+    return [s.strip() for s in parts if s.strip()]
+```
+
+This means audio playback starts in the browser after the first sentence is synthesized, not after the entire response is ready.
+
+<Info>
+  If the response contains no sentence-ending punctuation, it is treated as a single sentence and synthesized in one call.
+</Info>

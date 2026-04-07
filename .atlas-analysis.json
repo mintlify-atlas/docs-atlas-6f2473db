@@ -1,0 +1,80 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "Parlor",
+  "projectDescription": "On-device, real-time multimodal AI that enables natural voice and vision conversations running entirely on your local machine, powered by Gemma 4 E2B and Kokoro TTS.",
+  "theme": "almond",
+  "primaryColor": "#f8c61e",
+  "lightColor": "#fbf9ec",
+  "darkColor": "#4e412f",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "How It Works",
+            "pages": [
+              "architecture",
+              "models",
+              "tts-backends"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "performance",
+              "troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "API Reference",
+            "pages": [
+              "reference/websocket-api",
+              "reference/server-api"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "reference/benchmarks",
+              "reference/contributing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "On-device inference — no cloud, no API keys, fully private",
+    "Real-time multimodal: voice + vision in one conversation",
+    "Voice Activity Detection (VAD) for hands-free, push-to-talk-free interaction",
+    "Barge-in support — interrupt the AI mid-sentence by speaking",
+    "Sentence-level TTS streaming — audio starts before full response is generated",
+    "Cross-platform: Apple Silicon (MLX GPU) and Linux (ONNX/CPU)",
+    "Auto-downloads Gemma 4 E2B and Kokoro models on first run",
+    "~2.5-3.0s end-to-end latency on Apple M3 Pro"
+  ],
+  "publicApiSurface": [
+    "WebSocket /ws — send audio (base64 WAV) and image (base64 JPEG) frames, receive transcription + text + audio_chunk responses",
+    "GET / — serves the browser-based frontend UI",
+    "ENV MODEL_PATH — path to local gemma-4-E2B-it.litertlm model file",
+    "ENV PORT — server port (default: 8000)",
+    "ENV KOKORO_ONNX — force ONNX TTS backend even on Apple Silicon",
+    "TTSBackend.generate(text, voice, speed) — unified TTS interface",
+    "tts.load() — auto-selects best TTS backend for current platform",
+    "uv run server.py — start the FastAPI server"
+  ]
+}

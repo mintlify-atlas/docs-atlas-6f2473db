@@ -1,0 +1,176 @@
+---
+title: "Models"
+description: "The AI models that power Parlor — Gemma 4 E2B for understanding and Kokoro for speech synthesis."
+---
+
+Parlor uses two models: Gemma 4 E2B handles everything the user says and shows, and Kokoro TTS speaks the response back. Both run entirely on your machine.
+
+## Gemma 4 E2B
+
+Gemma 4 E2B (`gemma-4-E2B-it`) is a 2B effective parameter instruction-tuned model from Google DeepMind. It accepts audio, images, and text as input, making it well-suited for voice-and-camera conversations.
+
+| Property | Value |
+| -------- | ----- |
+| Full name | `gemma-4-E2B-it` |
+| HuggingFace repo | `litert-community/gemma-4-E2B-it-litert-lm` |
+| Filename | `gemma-4-E2B-it.litertlm` |
+| Format | LiteRT-LM (`.litertlm`) |
+| Download size | ~2.6 GB |
+| Effective parameters | 2B |
+
+### Capabilities
+
+- **Speech understanding** — transcribes and understands audio input directly (no separate ASR step)
+- **Vision understanding** — processes JPEG frames from the camera
+- **Text generation** — produces conversational responses in 1–4 short sentences
+- **Tool calling** — uses the `respond_to_user` tool to structure output as a `transcription` + `response` pair
+
+### Engine initialization
+
+The model is loaded once at server startup using LiteRT-LM. Vision and general inference run on the GPU; audio decoding runs on the CPU.
+
+```python
+engine = litert_lm.Engine(
+    MODEL_PATH,
+    backend=litert_lm.Backend.GPU,
+    vision_backend=litert_lm.Backend.GPU,
+    audio_backend=litert_lm.Backend.CPU,
+)
+engine.__enter__()
+```
+
+You can point Parlor at a pre-downloaded model file by setting the `MODEL_PATH` environment variable. If `MODEL_PATH` is not set, the model is fetched from HuggingFace automatically.
+
+<Note>
+  The first run downloads ~2.6 GB from HuggingFace. Subsequent runs use the cached file and start immediately.
+</Note>
+
+### System prompt
+
+Every conversation is initialized with the following system prompt:
+
+```python
+SYSTEM_PROMPT = (
+    "You are a friendly, conversational AI assistant. The user is talking to you "
+    "through a microphone and showing you their camera. "
+    "You MUST always use the respond_to_user tool to reply. "
+    "First transcribe exactly what the user said, then write your response."
+)
+```
+
+The prompt enforces tool use so the server can reliably extract both the transcription and the response as separate fields.
+
+### Tool call: `respond_to_user`
+
+The model is required to call this tool on every turn. The server captures the result via a closure-scoped dictionary.
+
+```python
+def respond_to_user(transcription: str, response: str) -> str:
+    """Respond to the user's voice message.
+
+    Args:
+        transcription: Exact transcription of what the user said in the audio.
+        response: Your conversational response to the user. Keep it to 1-4 short sentences.
+    """
+    tool_result["transcription"] = transcription
+    tool_result["response"] = response
+    return "OK"
+```
+
+If the model returns raw text instead of a tool call, the server falls back to using the first text content block in the response.
+
+### Performance (Apple M3 Pro)
+
+| Stage | Time |
+| ----- | ---- |
+| Speech + vision understanding | ~1.8–2.2 s |
+| Response generation (~25 tokens) | ~0.3 s |
+| Decode speed | ~83 tokens/sec |
+
+---
+
+## Kokoro TTS
+
+Kokoro-82M is an 82-million parameter text-to-speech model. Parlor ships two backends and selects the right one for your platform automatically.
+
+| Property | Value |
+| -------- | ----- |
+| Model | Kokoro-82M |
+| Default voice | `af_heart` |
+| Default speed | 1.1× |
+| Sample rate | 24 000 Hz |
+| Output format | 16-bit PCM |
+
+### Backends
+
+<Tabs>
+  <Tab title="MLX (Apple Silicon)">
+    **Class:** `MLXBackend`
+
+    **HuggingFace repo:** `mlx-community/Kokoro-82M-bf16`
+
+    **Runtime:** Apple GPU via the MLX framework
+
+    The MLX backend runs inference on the Apple GPU, which is the fastest option on Apple Silicon. During initialization it performs a warmup call to trigger the phonemizer and spaCy pipeline, so the first real synthesis request is not delayed.
+
+    ```python
+    class MLXBackend(TTSBackend):
+        def __init__(self):
+            from mlx_audio.tts.generate import load_model
+            self._model = load_model("mlx-community/Kokoro-82M-bf16")
+            self.sample_rate = self._model.sample_rate
+            # Warmup: triggers pipeline init (phonemizer, spacy, etc.)
+            list(self._model.generate(text="Hello", voice="af_heart", speed=1.0))
+
+        def generate(self, text: str, voice: str = "af_heart", speed: float = 1.1) -> np.ndarray:
+            results = list(self._model.generate(text=text, voice=voice, speed=speed))
+            return np.concatenate([np.array(r.audio) for r in results])
+    ```
+
+    **Requires:** `mlx-audio` Python package
+  </Tab>
+  <Tab title="ONNX (Linux / fallback)">
+    **Class:** `ONNXBackend`
+
+    **HuggingFace repo:** `fastrtc/kokoro-onnx`
+
+    **Files downloaded:** `kokoro-v1.0.onnx` + `voices-v1.0.bin`
+
+    **Runtime:** CPU via ONNX Runtime
+
+    The ONNX backend is used on Linux and as a fallback on Mac when `mlx-audio` is not installed. Both model files are downloaded from HuggingFace on first run.
+
+    ```python
+    class ONNXBackend(TTSBackend):
+        def __init__(self):
+            import kokoro_onnx
+            from huggingface_hub import hf_hub_download
+            model_path = hf_hub_download("fastrtc/kokoro-onnx", "kokoro-v1.0.onnx")
+            voices_path = hf_hub_download("fastrtc/kokoro-onnx", "voices-v1.0.bin")
+            self._model = kokoro_onnx.Kokoro(model_path, voices_path)
+            self.sample_rate = 24000
+
+        def generate(self, text: str, voice: str = "af_heart", speed: float = 1.1) -> np.ndarray:
+            pcm, _sr = self._model.create(text, voice=voice, speed=speed)
+            return pcm
+    ```
+
+    **Requires:** `kokoro-onnx` Python package
+  </Tab>
+</Tabs>
+
+### Backend comparison
+
+| | MLX (Apple Silicon) | ONNX (Linux / fallback) |
+| -- | ------------------- | ----------------------- |
+| Platform | macOS + Apple Silicon | Linux, or Mac fallback |
+| Compute | Apple GPU | CPU |
+| Package | `mlx-audio` | `kokoro-onnx` |
+| HuggingFace repo | `mlx-community/Kokoro-82M-bf16` | `fastrtc/kokoro-onnx` |
+| Files downloaded | Model weights (bf16) | `kokoro-v1.0.onnx` + `voices-v1.0.bin` |
+| Warmup on init | Yes (phonemizer + spaCy) | No |
+| TTS speed (M3 Pro, 1–3 sentences) | ~0.3–0.7 s | Slower |
+
+<Note>
+  Both backends download their model files from HuggingFace automatically on first run. You do not need to download anything manually.
+</Note>

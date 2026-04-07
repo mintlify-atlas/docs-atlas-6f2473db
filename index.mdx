@@ -1,97 +1,71 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Parlor — On-Device Multimodal AI"
+description: "Have natural voice and vision conversations with an AI that runs entirely on your machine. Powered by Gemma 4 E2B and Kokoro TTS."
 ---
 
-## Setting up
+Parlor lets you talk to an AI — and show it your camera — with no cloud, no API keys, and no data leaving your machine. It runs on Apple Silicon and Linux GPUs, achieving real-time end-to-end latency of around 2.5–3 seconds.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get Parlor running locally in under five minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="How It Works" icon="diagram-project" href="/architecture">
+    Understand the WebSocket pipeline, VAD, and streaming TTS.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    Set a local model path, change the port, and tune TTS behavior.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="WebSocket API" icon="plug" href="/reference/websocket-api">
+    Build your own client against the real-time WebSocket endpoint.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What Parlor does
 
-Everything you need to create world-class documentation.
+Parlor streams audio and camera frames from your browser to a local FastAPI server. The server runs **Gemma 4 E2B** (via LiteRT-LM) to transcribe your speech and understand what the camera sees, then streams synthesized speech back using **Kokoro TTS** — sentence by sentence, so you hear the first sentence before the rest is even generated.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Fully private" icon="shield-halved">
+    All inference is on-device. No data is sent to any external service.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Hands-free VAD" icon="microphone">
+    Silero VAD detects when you start and stop speaking — no push-to-talk required.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Barge-in" icon="hand">
+    Interrupt the AI mid-sentence by speaking. It stops immediately and listens.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Vision-aware" icon="camera">
+    Share your camera and ask about what you see — the model processes both at once.
   </Card>
-</Columns>
+</CardGroup>
 
-## Need inspiration?
+## Get started
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/fikrikarim/parlor.git
+    cd parlor
+    ```
+  </Step>
+  <Step title="Install uv and sync dependencies">
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    cd src
+    uv sync
+    ```
+  </Step>
+  <Step title="Start the server">
+    ```bash
+    uv run server.py
+    ```
+    Models download automatically on first run (~2.6 GB for Gemma 4 E2B, plus TTS models).
+  </Step>
+  <Step title="Open the browser UI">
+    Navigate to [http://localhost:8000](http://localhost:8000), grant camera and microphone access, and start talking.
+  </Step>
+</Steps>
+
+<Note>
+  Parlor requires Python 3.12, macOS with Apple Silicon, or Linux with a supported GPU, and approximately 3 GB of free RAM.
+</Note>

@@ -1,0 +1,122 @@
+---
+title: "Performance"
+description: "Latency benchmarks and optimization tips for Parlor on Apple Silicon and Linux."
+---
+
+## Measured latency on Apple M3 Pro
+
+These numbers reflect a typical voice + vision turn: you speak a short question while the camera is active, and Parlor responds with 1–3 sentences.
+
+| Stage | Time |
+|---|---|
+| Speech + vision understanding | ~1.8–2.2s |
+| Response generation (~25 tokens) | ~0.3s |
+| Text-to-speech (1–3 sentences) | ~0.3–0.7s |
+| **Total end-to-end** | **~2.5–3.0s** |
+
+Decode speed: **~83 tokens/sec** on GPU (Apple M3 Pro).
+
+<Info>
+  These timings are from a warm model. The first inference after startup is slower due to JIT compilation warmup — see [model cold start](#what-affects-latency) below.
+</Info>
+
+## How sentence-level TTS streaming works
+
+Parlor starts playing audio before the full response is generated. The server splits the LLM output into sentences using punctuation boundaries, then synthesizes and streams each sentence independently:
+
+1. The LLM finishes generating the full response text.
+2. The server splits the text into sentences (e.g., `"Hello! How are you?"` → two sentences).
+3. It synthesizes and sends the first sentence as a PCM audio chunk immediately.
+4. While your browser plays the first sentence, the server synthesizes the next one.
+5. You hear the response flow naturally without waiting for all sentences to be ready.
+
+This means perceived latency is closer to the time-to-first-sentence than to the total TTS time for all sentences.
+
+## What affects latency
+
+**Audio clip length**
+
+Longer audio means more prefill tokens for Gemma to process before it can start generating a response. Short, focused questions are processed faster than long, rambling ones.
+
+**Number of sentences in the response**
+
+Each sentence requires a separate TTS pass. The system prompt constrains the AI to 1–4 short sentences, which keeps TTS time predictable. Longer responses accumulate more TTS passes before the final `audio_end` signal is sent.
+
+**Vision (camera frame)**
+
+Adding a JPEG camera frame increases the prefill step because Gemma must encode the image tokens alongside the audio tokens. However, Gemma 4 E2B handles multimodal prefill efficiently, so the overhead is included in the ~1.8–2.2s speech + vision understanding figure above.
+
+**Model cold start**
+
+The first inference after the server starts is slower due to JIT compilation in LiteRT-LM and pipeline initialization in the TTS backend (phonemizer, spacy, and the MLX graph on Apple Silicon). Subsequent turns are consistently faster.
+
+## Platform differences
+
+<CardGroup cols={3}>
+  <Card title="Apple Silicon (M-series)" icon="apple">
+    MLX backend uses the GPU for both LLM inference (LiteRT-LM) and TTS (mlx-audio). This is the fastest configuration and the one the benchmarks above are based on.
+  </Card>
+  <Card title="Linux with NVIDIA GPU" icon="server">
+    LiteRT-LM runs LLM inference on the GPU. TTS uses kokoro-onnx on CPU via ONNX Runtime, which is slower than the MLX GPU path. Expect higher TTS latency.
+  </Card>
+  <Card title="Linux with AMD GPU" icon="server">
+    LiteRT-LM may have compatibility issues with AMD GPUs. LLM inference may fall back to CPU or fail entirely. Check the LiteRT-LM compatibility matrix before using AMD hardware.
+  </Card>
+</CardGroup>
+
+## Running the benchmarks
+
+Parlor ships two benchmark scripts in `src/benchmarks/`.
+
+### End-to-end benchmark
+
+Measures real latency over WebSocket, including network, serialization, LLM inference, and TTS. Start the server first, then run the benchmark:
+
+```bash
+# Terminal 1
+cd src
+uv run server.py
+
+# Terminal 2
+cd src
+uv run python benchmarks/bench.py
+```
+
+You can point the benchmark at a non-default server with the `SERVER_URL` environment variable:
+
+```bash
+SERVER_URL=ws://192.168.1.10:8000/ws uv run python benchmarks/bench.py
+```
+
+The benchmark runs two suites:
+
+- **Individual turns** — a fresh WebSocket connection per test, covering text-only, audio-only (2s and 5s clips), image-only, and image + audio combinations.
+- **Multi-turn conversation** — a single persistent connection through five turns, simulating a real conversation with growing context.
+
+### TTS backend benchmark
+
+Compares kokoro-onnx (CPU) against mlx-audio (Apple GPU) for short, medium, and long sentences. Reports mean latency, standard deviation, audio duration, and real-time factor (RTF). An RTF below 1.0 means synthesis is faster than real-time playback.
+
+```bash
+cd src
+uv run python benchmarks/benchmark_tts.py
+```
+
+On Linux, only the kokoro-onnx results are printed. On Apple Silicon, both backends are benchmarked and a speedup comparison is shown.
+
+## Tips to reduce latency
+
+<Tip>
+  Keep your questions short. Shorter audio clips produce fewer prefill tokens, which directly reduces speech understanding time.
+</Tip>
+
+- **Short questions** — the single biggest lever. A 2-second clip is processed noticeably faster than a 5-second one.
+- **Short AI responses** — the system prompt already requests 1–4 sentences, but you can reinforce this by asking for brief answers in your question.
+- **Pre-download the model** — set `MODEL_PATH` to an already-downloaded `.litertlm` file to skip the HuggingFace download check on every startup.
+- **Use Apple Silicon** — the MLX TTS path is significantly faster than the ONNX CPU path on Linux.
+- **Use headphones** — prevents audio feedback that can trigger false VAD activations and cause unnecessary inference rounds.
+
+```bash
+# Point to a pre-downloaded model file
+MODEL_PATH=/path/to/gemma-4-E2B-it.litertlm uv run server.py
+```

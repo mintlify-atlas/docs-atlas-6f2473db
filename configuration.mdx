@@ -1,0 +1,82 @@
+---
+title: Configuration
+description: Environment variables and platform-specific options for Parlor.
+---
+
+Parlor is configured via environment variables. Create a `.env` file in the `src/` directory (or export variables in your shell) before starting the server.
+
+## Complete .env example
+
+```bash
+# Path to a local Gemma 4 E2B model file (optional)
+# MODEL_PATH=/path/to/gemma-4-E2B-it.litertlm
+
+# Server port (default: 8000)
+# PORT=8000
+
+# Force ONNX TTS backend on Apple Silicon (optional, for testing)
+# KOKORO_ONNX=1
+```
+
+All variables are optional. Parlor works out of the box with no `.env` file at all.
+
+## Variables
+
+<ParamField path="MODEL_PATH" type="string">
+  Path to a local Gemma 4 E2B model file in `.litertlm` format.
+
+  When this is not set, Parlor downloads the model automatically from HuggingFace (`litert-community/gemma-4-E2B-it-litert-lm`) on the first run. The download is approximately 2.6 GB and happens once — the file is cached by the HuggingFace hub library.
+
+  Set `MODEL_PATH` when you have already downloaded the model manually and want to avoid the auto-download, or when you want to use a model file stored in a specific location.
+
+  ```bash
+  MODEL_PATH=/Users/yourname/models/gemma-4-E2B-it.litertlm
+  ```
+</ParamField>
+
+<ParamField path="PORT" type="number" default="8000">
+  The port the FastAPI server listens on.
+
+  ```bash
+  PORT=9000
+  ```
+
+  After changing the port, open `http://localhost:<PORT>` instead of the default `http://localhost:8000`.
+</ParamField>
+
+<ParamField path="KOKORO_ONNX" type="string">
+  When set to any non-empty value, forces the ONNX TTS backend even on Apple Silicon.
+
+  By default, Parlor automatically selects the best TTS backend for your platform (see [Platform detection](#platform-detection) below). Set this variable if you want to test the ONNX backend on a Mac, or if the MLX backend fails to load.
+
+  ```bash
+  KOKORO_ONNX=1
+  ```
+</ParamField>
+
+## Platform detection
+
+Parlor automatically selects the TTS backend based on your hardware:
+
+| Platform | TTS backend | Acceleration |
+|---|---|---|
+| macOS with Apple Silicon (M-series) | `mlx-audio` (Kokoro 82M via MLX) | Apple GPU |
+| Linux | `kokoro-onnx` (Kokoro via ONNX Runtime) | CPU |
+| Apple Silicon with `KOKORO_ONNX` set | `kokoro-onnx` | CPU |
+
+The detection logic in `tts.py`:
+
+```python
+def load() -> TTSBackend:
+    if _is_apple_silicon() and not os.environ.get("KOKORO_ONNX"):
+        # Use MLX backend (GPU) on Apple Silicon
+        return MLXBackend()
+    # Fall back to ONNX backend (CPU)
+    return ONNXBackend()
+```
+
+The language model always runs on GPU via LiteRT-LM regardless of platform.
+
+<Info>
+  If you are on Linux and do not have a supported GPU, the language model (`litert_lm.Backend.GPU`) will fail to initialize. Linux GPU support requires a compatible device recognized by LiteRT-LM.
+</Info>

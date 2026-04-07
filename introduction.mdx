@@ -1,0 +1,53 @@
+---
+title: Introduction
+description: Parlor is an on-device, real-time multimodal AI assistant for natural voice and vision conversations — fully local, fully private.
+---
+
+<Note>
+  Parlor is a research preview. Expect rough edges and occasional bugs.
+</Note>
+
+Parlor lets you have natural voice and vision conversations with an AI that runs entirely on your machine. Speak into your microphone, point your camera at something, and the AI talks back — no API keys, no cloud costs, no data leaving your device.
+
+## Why Parlor exists
+
+Running a self-hosted voice AI at scale gets expensive fast. The goal behind Parlor is to eliminate server costs entirely by running everything on-device. Six months ago that required an RTX 5090 just for the voice models. Google's Gemma 4 E2B changed the equation: it runs in real-time on an M3 Pro with vision included.
+
+The longer-term vision is a model small enough to run on a phone, where you can point your camera at any object and have a multilingual conversation about it — something that was only a demo a few years ago.
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Voice activity detection" icon="microphone">
+    Browser-side VAD via Silero detects when you start and stop speaking. No push-to-talk required.
+  </Card>
+  <Card title="Barge-in" icon="bolt">
+    Interrupt the AI mid-sentence by speaking. Audio playback stops and the AI listens immediately.
+  </Card>
+  <Card title="Sentence-level TTS streaming" icon="waveform">
+    Audio starts playing before the full response is generated. Each sentence is synthesized and sent as soon as it is ready.
+  </Card>
+  <Card title="Multimodal: voice + camera" icon="camera">
+    A camera frame is captured when you speak and sent alongside your audio. The AI can see and discuss what is in front of your camera.
+  </Card>
+</CardGroup>
+
+## Requirements
+
+| Requirement | Details |
+|---|---|
+| Python | 3.12 (exactly — not 3.13+) |
+| Platform | macOS with Apple Silicon, or Linux with a supported GPU |
+| RAM | ~3 GB free for the model |
+| Browser | Any modern browser with camera and microphone access |
+
+## Tech stack
+
+| Component | Technology |
+|---|---|
+| Language model | Gemma 4 E2B via LiteRT-LM (GPU inference) |
+| Text-to-speech | Kokoro 82M — MLX backend on Apple Silicon, ONNX on Linux |
+| Voice activity detection | Silero VAD (runs in the browser) |
+| Server | FastAPI + WebSocket |
+
+The server receives raw PCM audio and JPEG frames over a WebSocket, runs inference, and streams synthesized audio chunks back to the browser sentence by sentence.

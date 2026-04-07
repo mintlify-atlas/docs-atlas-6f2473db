@@ -1,0 +1,75 @@
+---
+title: "Server API"
+description: "HTTP endpoints served by the Parlor FastAPI server."
+---
+
+Parlor runs a [FastAPI](https://fastapi.tiangolo.com/) server that serves the browser frontend and exposes the real-time WebSocket interface.
+
+## Starting the server
+
+<Steps>
+  <Step title="Install dependencies">
+    From the `src/` directory, run:
+
+    ```bash
+    uv sync
+    ```
+  </Step>
+  <Step title="Start the server">
+    ```bash
+    uv run server.py
+    ```
+
+    To use a custom port:
+
+    ```bash
+    PORT=9000 uv run server.py
+    ```
+  </Step>
+  <Step title="Open the UI">
+    Navigate to [http://localhost:8000](http://localhost:8000) in your browser. Grant camera and microphone access when prompted, then start talking.
+  </Step>
+</Steps>
+
+<Note>
+  The server binds to `0.0.0.0`, so it is reachable from other devices on your local network at `http://<your-ip>:PORT`.
+</Note>
+
+<Warning>
+  Do not expose the server to the public internet. There is no authentication — anyone who can reach the port can interact with your local models.
+</Warning>
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8000` | Server listen port |
+| `MODEL_PATH` | auto-download from HuggingFace | Path to a local `gemma-4-E2B-it.litertlm` file |
+| `KOKORO_ONNX` | unset | Set to any value to force the ONNX TTS backend on Apple Silicon |
+
+## Startup sequence
+
+Before accepting connections, the server loads two models:
+
+1. **Gemma 4 E2B** — downloaded from `litert-community/gemma-4-E2B-it-litert-lm` on HuggingFace (~2.6 GB) on first run, or read from `MODEL_PATH` if set. Loaded with GPU backends for text and vision, CPU for audio.
+2. **Kokoro TTS** — platform-detected at startup:
+   - **macOS (Apple Silicon):** `mlx-audio` with the MLX GPU framework (`mlx-community/Kokoro-82M-bf16`)
+   - **Linux / other:** `kokoro-onnx` with ONNX Runtime on CPU (`fastrtc/kokoro-onnx`)
+
+Model loading completes before uvicorn starts accepting connections.
+
+## Endpoints
+
+### GET /
+
+Returns the browser-based frontend as an HTML response.
+
+The page (`src/index.html`) is a single-page application that handles microphone capture via Silero VAD, camera capture, WebSocket communication, and audio playback. No build step is required.
+
+**Response:** `text/html`
+
+### WebSocket /ws
+
+Accepts WebSocket upgrade requests. Each connection starts a fresh conversation session with its own context.
+
+See [WebSocket API](/reference/websocket-api) for the full message protocol.

@@ -1,80 +1,117 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get Parlor running on your machine in a few minutes.
 ---
 
-## Get started in three steps
+<Warning>
+  Parlor requires Python **exactly 3.12**. Python 3.13 and above are not supported. Check with `python3 --version` before proceeding.
+</Warning>
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Check prerequisites">
+    Make sure you have the following before starting:
 
-### Step 1: Set up your local environment
+    - Python 3.12 (not 3.13+)
+    - macOS with Apple Silicon (M1/M2/M3/M4), or Linux with a supported GPU
+    - ~3 GB of free disk space for the model
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    Verify your Python version:
 
-### Step 2: Deploy your changes
+    ```bash
+    python3 --version
+    # Expected: Python 3.12.x
+    ```
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/fikrikarim/parlor.git
+    cd parlor
+    ```
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Install uv">
+    Parlor uses [uv](https://github.com/astral-sh/uv) for dependency management. If you do not have it yet:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
 
-### Step 3: Go live
+    After installation, restart your shell or source your profile so the `uv` command is available.
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Install dependencies">
+    ```bash
+    cd src
+    uv sync
+    ```
 
-## Next steps
+    `uv sync` reads `pyproject.toml` and installs the correct packages for your platform. On Apple Silicon it installs the MLX audio stack; on Linux it installs the ONNX stack.
+  </Step>
 
-Now that you have your docs running, explore these key features:
+  <Step title="Start the server">
+    ```bash
+    uv run server.py
+    ```
 
-<CardGroup cols={2}>
+    The server starts on port 8000 by default.
+  </Step>
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+  <Step title="Wait for model download (first run only)">
+    On the first run, Parlor automatically downloads the required models:
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+    - **Gemma 4 E2B** (~2.6 GB) from `litert-community/gemma-4-E2B-it-litert-lm` on HuggingFace
+    - **Kokoro TTS models** from `mlx-community/Kokoro-82M-bf16` (Apple Silicon) or `fastrtc/kokoro-onnx` (Linux)
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+    You will see download progress printed to the terminal. Once complete, you should see:
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+    ```
+    Engine loaded.
+    TTS: mlx-audio (Apple GPU, sample_rate=24000)
+    INFO:     Uvicorn running on http://0.0.0.0:8000
+    ```
 
-</CardGroup>
+    <Tip>
+      Model downloads are one-time only. After the first run, models are cached locally and load in seconds. To use a pre-downloaded model file, set `MODEL_PATH` in a `.env` file — see [Configuration](/configuration).
+    </Tip>
+  </Step>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+  <Step title="Open the app">
+    Navigate to [http://localhost:8000](http://localhost:8000) in your browser.
+
+    When prompted, grant access to your **camera** and **microphone**. Parlor needs both to enable multimodal conversations.
+  </Step>
+
+  <Step title="Start talking">
+    Speak naturally. Parlor handles the rest automatically:
+
+    1. **Silero VAD** in the browser detects that you are speaking
+    2. When you stop, your audio and a camera frame are sent to the server over WebSocket
+    3. **Gemma 4 E2B** transcribes what you said and generates a response
+    4. **Kokoro TTS** synthesizes audio sentence by sentence and streams it back
+    5. The browser plays the audio and displays the transcript
+
+    The full round-trip on an Apple M3 Pro takes roughly 2.5–3 seconds.
+  </Step>
+</Steps>
+
+## Interrupting the AI
+
+To interrupt the AI while it is speaking, just start talking. The browser detects your voice via VAD and sends an interrupt signal to the server immediately. TTS playback stops and the AI begins processing your new message.
+
+## How the camera works
+
+A JPEG frame is captured from your camera at the moment you stop speaking and sent alongside your audio. The AI receives both at the same time and can reference what it sees in its response. If you prefer not to share your camera, covering it still allows voice-only interaction.
+
+## Performance reference
+
+Measured on Apple M3 Pro:
+
+| Stage | Time |
+|---|---|
+| Speech + vision understanding | ~1.8–2.2 s |
+| Response generation (~25 tokens) | ~0.3 s |
+| Text-to-speech (1–3 sentences) | ~0.3–0.7 s |
+| **Total end-to-end** | **~2.5–3.0 s** |
+
+Decode speed is approximately 83 tokens/sec on GPU.

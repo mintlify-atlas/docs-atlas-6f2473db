@@ -1,0 +1,275 @@
+---
+title: "Troubleshooting"
+description: "Common issues and how to fix them when running Parlor."
+---
+
+<Note>
+  Parlor is a research preview. If you encounter an issue not covered here, check the terminal output from `uv run server.py` — most errors include a descriptive message.
+</Note>
+
+## Installation issues
+
+<AccordionGroup>
+  <Accordion title='"Python version not supported"'>
+    Parlor requires exactly Python 3.12. The `pyproject.toml` specifies `requires-python = ">=3.12,<3.13"`, so Python 3.11 and 3.13+ are both rejected.
+
+    Check your active Python version:
+
+    ```bash
+    python --version
+    python3.12 --version
+    ```
+
+    If you have `uv` installed, it will automatically find or download a compatible Python interpreter. Make sure you are running `uv sync` and `uv run` inside the `src/` directory where `pyproject.toml` lives:
+
+    ```bash
+    cd src
+    uv sync
+    ```
+
+    If `uv` cannot find Python 3.12, install it explicitly:
+
+    ```bash
+    uv python install 3.12
+    ```
+  </Accordion>
+
+  <Accordion title='"mlx-audio not found" or TTS import error on macOS'>
+    `mlx-audio` is only installed on macOS with Apple Silicon. On Linux, Parlor uses `kokoro-onnx` instead. If you see an import error for `mlx_audio` on macOS, the package may not have been installed correctly.
+
+    Re-run the sync step:
+
+    ```bash
+    cd src
+    uv sync
+    ```
+
+    If the error persists, verify that `mlx-audio` appears in the installed packages:
+
+    ```bash
+    uv pip list | grep mlx
+    ```
+
+    On Linux you should see `kokoro-onnx` instead:
+
+    ```bash
+    uv pip list | grep kokoro
+    ```
+
+    <Note>
+      You can force the ONNX backend on macOS by setting the `KOKORO_ONNX` environment variable. This is useful for diagnosing whether an issue is specific to the MLX path:
+
+      ```bash
+      KOKORO_ONNX=1 uv run server.py
+      ```
+    </Note>
+  </Accordion>
+
+  <Accordion title='"litert-lm install fails" on Linux'>
+    `litert-lm` has specific CUDA version requirements on Linux. If the install fails with a CUDA or wheel compatibility error, check that your CUDA toolkit version matches what `litert-lm` expects.
+
+    Verify your CUDA version:
+
+    ```bash
+    nvcc --version
+    nvidia-smi
+    ```
+
+    Then check the [LiteRT-LM GitHub repository](https://github.com/google-ai-edge/LiteRT-LM) for supported CUDA versions and install the matching wheel if a pre-built one exists. AMD GPU users may find that `litert-lm` is not compatible with their hardware.
+  </Accordion>
+</AccordionGroup>
+
+## Model download issues
+
+<AccordionGroup>
+  <Accordion title="Model download fails or times out">
+    On first run, Parlor downloads Gemma 4 E2B (~2.6 GB) from HuggingFace automatically. If the download fails or is interrupted, set `MODEL_PATH` to a file you downloaded manually:
+
+    ```bash
+    # Download manually using huggingface-cli
+    huggingface-cli download litert-community/gemma-4-E2B-it-litert-lm gemma-4-E2B-it.litertlm --local-dir ~/models
+
+    # Then start the server pointing at the local file
+    MODEL_PATH=~/models/gemma-4-E2B-it.litertlm uv run server.py
+    ```
+
+    Setting `MODEL_PATH` also skips the HuggingFace download check on every startup, which reduces cold-start time.
+  </Accordion>
+
+  <Accordion title='"huggingface_hub not found"'>
+    The `huggingface_hub` package is installed as a dependency via `uv sync`. If it is missing, the dependency installation step may have been skipped or failed silently.
+
+    Re-run sync from the `src/` directory:
+
+    ```bash
+    cd src
+    uv sync
+    ```
+
+    Confirm the package is present:
+
+    ```bash
+    uv pip list | grep huggingface
+    ```
+  </Accordion>
+
+  <Accordion title="Download is very slow">
+    Gemma 4 E2B is approximately 2.6 GB. On a slow connection this can take several minutes. You can monitor download progress in the terminal — `huggingface_hub` prints progress to stdout.
+
+    If you want to download the model separately before running the server:
+
+    ```bash
+    cd src
+    uv run python -c "
+    from huggingface_hub import hf_hub_download
+    path = hf_hub_download('litert-community/gemma-4-E2B-it-litert-lm', 'gemma-4-E2B-it.litertlm')
+    print('Downloaded to:', path)
+    "
+    ```
+
+    Then use `MODEL_PATH` to point the server at the cached file.
+  </Accordion>
+</AccordionGroup>
+
+## Runtime issues
+
+<AccordionGroup>
+  <Accordion title="No audio in the browser">
+    Parlor requires microphone access to function. If your browser has not granted mic permissions, the VAD will never activate and you will not be able to send audio.
+
+    - When you open `http://localhost:8000`, the browser should prompt you for microphone and camera access. Click **Allow**.
+    - If you accidentally blocked permissions, open the browser's site settings for `localhost` and reset microphone and camera to **Allow**, then refresh the page.
+    - On macOS, you may also need to grant the terminal application (or the browser) microphone access in **System Settings → Privacy & Security → Microphone**.
+  </Accordion>
+
+  <Accordion title="No camera feed or Parlor does not see the camera">
+    Camera permissions work the same way as microphone permissions. Check your browser's site settings for `localhost` and ensure the camera is set to **Allow**.
+
+    Parlor captures a JPEG frame from your camera automatically each time you speak — you do not need to do anything beyond granting access. If the camera permission is granted but you see errors in the terminal related to image decoding, try refreshing the page.
+  </Accordion>
+
+  <Accordion title="AI does not respond after you speak">
+    Check the server terminal for error output. Common causes:
+
+    - **LLM inference error** — LiteRT-LM encountered an error during `conversation.send_message`. The full traceback will appear in the terminal.
+    - **VAD not triggering** — if the microphone level is too low, Silero VAD may not detect speech. Speak louder or move closer to the mic.
+    - **Model not loaded** — if the server is still downloading or loading the model, it will not respond until loading completes. Wait for the `Engine loaded.` and `TTS:` lines to appear before speaking.
+
+    Run the server with explicit output visible:
+
+    ```bash
+    cd src
+    uv run server.py
+    ```
+
+    You should see lines like `LLM (2.05s) [tool] heard: "..."` when a turn completes successfully.
+  </Accordion>
+
+  <Accordion title="Audio playback stutters or cuts out">
+    Stuttering is most common on Linux where TTS uses the kokoro-onnx CPU backend, which synthesizes audio more slowly than the MLX GPU backend on Apple Silicon.
+
+    Parlor uses sentence-level streaming — audio for each sentence is sent as soon as it is synthesized. If synthesis is slower than playback, you may hear a gap between sentences.
+
+    On macOS, confirm the MLX backend is active by checking the server startup output for:
+
+    ```
+    TTS: mlx-audio (Apple GPU, sample_rate=24000)
+    ```
+
+    If it shows `TTS: kokoro-onnx (CPU, ...)` on macOS, `mlx-audio` may not be installed. Run `uv sync` to reinstall dependencies.
+  </Accordion>
+
+  <Accordion title='"interrupted" appears repeatedly in the terminal logs'>
+    This is expected behavior. When you speak while the AI is talking, Parlor detects the interruption (barge-in) and stops generating or playing audio. The browser sends an `interrupt` message over the WebSocket, which the server logs as `Client interrupted`.
+
+    If you see `interrupted` on every turn even when you are not speaking, the microphone may be picking up the speaker output. Use headphones to prevent audio feedback.
+  </Accordion>
+</AccordionGroup>
+
+## Performance issues
+
+<AccordionGroup>
+  <Accordion title="Very high latency (>5s end-to-end)">
+    Latency above 5 seconds usually means GPU acceleration is not active.
+
+    Check the server startup output for backend information:
+
+    ```
+    Loading Gemma 4 E2B from /path/to/model...
+    Engine loaded.
+    TTS: mlx-audio (Apple GPU, sample_rate=24000)
+    ```
+
+    If the engine fails to initialize with `Backend.GPU` and falls back to CPU, LLM inference will be much slower. On Linux, verify that CUDA drivers and the correct `litert-lm` wheel are installed. On macOS, ensure you are on Apple Silicon (M-series chip).
+
+    You can also run the benchmark script to get per-stage timing:
+
+    ```bash
+    cd src
+    uv run server.py &   # start server in background
+    uv run python benchmarks/bench.py
+    ```
+  </Accordion>
+
+  <Accordion title="TTS is slow on Mac">
+    On Apple Silicon, Parlor should use `mlx-audio` (GPU-accelerated). If TTS is slow, it may have fallen back to `kokoro-onnx` (CPU).
+
+    Check the startup log for the TTS backend line. If it shows `kokoro-onnx`, reinstall dependencies:
+
+    ```bash
+    cd src
+    uv sync
+    ```
+
+    To confirm which backend would be selected without starting the full server:
+
+    ```bash
+    cd src
+    uv run python -c "import tts; b = tts.load(); print(type(b).__name__)"
+    ```
+
+    You can also force the ONNX backend temporarily to compare:
+
+    ```bash
+    KOKORO_ONNX=1 uv run server.py
+    ```
+  </Accordion>
+
+  <Accordion title="First response is always slow, subsequent ones are faster">
+    This is normal. On first inference, LiteRT-LM compiles the model graph (JIT warmup), and the TTS backend initializes its pipeline (phonemizer, spacy, MLX graph). These are one-time costs per server session.
+
+    From the second turn onward, you should see consistent latency matching the benchmarks. If the second and subsequent turns are also slow, the GPU acceleration may not be working — see the high latency section above.
+  </Accordion>
+</AccordionGroup>
+
+## VAD issues
+
+<AccordionGroup>
+  <Accordion title="VAD never triggers — Parlor does not detect your voice">
+    Silero VAD runs in the browser and listens to the microphone stream. If it never activates:
+
+    - Confirm microphone permission is granted for `localhost` in your browser.
+    - Speak at a normal conversational volume. Parlor uses Silero VAD which is fairly sensitive, but very quiet speech may not cross the detection threshold.
+    - Check that the correct microphone is selected in the browser. On macOS, go to **System Settings → Sound → Input** to verify the right device is active.
+    - Try a different browser if the issue persists — some browsers handle `AudioContext` and VAD differently.
+  </Accordion>
+
+  <Accordion title="VAD triggers on background noise">
+    Silero VAD is robust against mild background noise, but a loud environment (fans, air conditioning, street noise) can cause false activations.
+
+    - Move to a quieter environment or use a directional microphone.
+    - Use headphones — this also prevents the speaker output from feeding back into the mic.
+
+    <Warning>
+      Constant false VAD triggers will send audio to the server repeatedly, which runs LLM inference on each activation and increases CPU/GPU load significantly.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="VAD triggers constantly even in silence">
+    Constant triggering typically means the microphone is picking up speaker output (audio feedback loop). The AI speaks, the mic picks it up, VAD activates, which triggers another AI response, and so on.
+
+    The fix is simple: **use headphones**. This isolates the microphone from the speaker and breaks the feedback loop.
+
+    If you are already using headphones and still seeing constant triggers, check whether another application is outputting audio to the system speakers (e.g., a notification sound or background music).
+  </Accordion>
+</AccordionGroup>

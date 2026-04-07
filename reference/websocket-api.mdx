@@ -1,0 +1,226 @@
+---
+title: "WebSocket API"
+description: "Real-time WebSocket protocol for sending multimodal input and receiving AI responses."
+---
+
+Connect to `ws://localhost:8000/ws` to start a session. Each WebSocket connection maintains its own conversation history — the model remembers the full exchange as long as the connection stays open.
+
+<Note>
+  The server must finish loading models before it accepts connections. On first run this can take 30–60 seconds while Gemma 4 E2B downloads (~2.6 GB).
+</Note>
+
+All messages are JSON sent as UTF-8 text frames. There is no binary framing.
+
+## Client → server messages
+
+<Tabs>
+  <Tab title="Multimodal input">
+    Send audio, image, or text — or any combination — as a single JSON object. At least one field must be present.
+
+    <ResponseField name="audio" type="string">
+      Base64-encoded WAV file. 16 kHz mono 16-bit PCM is recommended. When present, the model transcribes and responds to the speech.
+    </ResponseField>
+
+    <ResponseField name="image" type="string">
+      Base64-encoded JPEG frame from a camera or image source. When present, the model sees and responds to the image.
+    </ResponseField>
+
+    <ResponseField name="text" type="string">
+      Plain text input. Used only when both `audio` and `image` are omitted.
+    </ResponseField>
+
+    The server infers intent from which fields are present:
+
+    | Fields sent | Behaviour |
+    |---|---|
+    | `audio` + `image` | Model hears speech and sees the image |
+    | `audio` only | Model hears speech |
+    | `image` only | Model describes what it sees |
+    | `text` only | Model reads the text |
+
+    ```json example input
+    {
+      "audio": "<base64-encoded WAV>",
+      "image": "<base64-encoded JPEG>"
+    }
+    ```
+  </Tab>
+  <Tab title="Interrupt">
+    Send an interrupt at any time to stop the current response, including in-progress TTS audio. The server skips any remaining `audio_chunk` and `audio_end` messages for the current turn and waits for your next input.
+
+    <ResponseField name="type" type="string" required>
+      Must be `"interrupt"`.
+    </ResponseField>
+
+    ```json interrupt message
+    {
+      "type": "interrupt"
+    }
+    ```
+
+    <Tip>
+      The browser frontend sends this automatically when Silero VAD detects you speaking while the AI is still talking (barge-in).
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Server → client messages
+
+For each turn, the server sends messages in this sequence: `text` → `audio_start` → one or more `audio_chunk` → `audio_end`.
+
+<Tabs>
+  <Tab title="text">
+    Sent once per turn, immediately after LLM inference completes and before TTS begins.
+
+    <ResponseField name="type" type="string" required>
+      Always `"text"`.
+    </ResponseField>
+
+    <ResponseField name="text" type="string" required>
+      The AI's conversational response.
+    </ResponseField>
+
+    <ResponseField name="transcription" type="string">
+      Exact transcription of what the user said in the audio. Present only when audio was sent and the model's tool call succeeded.
+    </ResponseField>
+
+    <ResponseField name="llm_time" type="number" required>
+      Time in seconds for LLM inference, rounded to two decimal places.
+    </ResponseField>
+
+    ```json text message
+    {
+      "type": "text",
+      "text": "That looks like a rubber duck — a classic debugging companion!",
+      "transcription": "What's on my desk?",
+      "llm_time": 1.93
+    }
+    ```
+  </Tab>
+  <Tab title="audio_start">
+    Sent before the first audio chunk so you can initialize your playback pipeline.
+
+    <ResponseField name="type" type="string" required>
+      Always `"audio_start"`.
+    </ResponseField>
+
+    <ResponseField name="sample_rate" type="number" required>
+      Sample rate of the PCM audio that follows. Typically `24000` Hz (Kokoro TTS output rate).
+    </ResponseField>
+
+    <ResponseField name="sentence_count" type="number" required>
+      Number of `audio_chunk` messages that will follow. The response is split into sentences and each is synthesised separately.
+    </ResponseField>
+
+    ```json audio_start message
+    {
+      "type": "audio_start",
+      "sample_rate": 24000,
+      "sentence_count": 2
+    }
+    ```
+  </Tab>
+  <Tab title="audio_chunk">
+    One message per sentence. Chunks arrive as each sentence finishes synthesis, so you can begin playback before all chunks have arrived.
+
+    <ResponseField name="type" type="string" required>
+      Always `"audio_chunk"`.
+    </ResponseField>
+
+    <ResponseField name="audio" type="string" required>
+      Base64-encoded raw PCM audio — signed 16-bit little-endian integers at the `sample_rate` from `audio_start`.
+    </ResponseField>
+
+    <ResponseField name="index" type="number" required>
+      Zero-based sentence index. Chunks are always sent in order.
+    </ResponseField>
+
+    ```json audio_chunk message
+    {
+      "type": "audio_chunk",
+      "audio": "<base64-encoded int16 PCM>",
+      "index": 0
+    }
+    ```
+
+    <Note>
+      Decode `audio` with `base64.b64decode`, then interpret the bytes as `numpy.int16` (or `Int16Array` in the browser) before passing to your audio output device.
+    </Note>
+  </Tab>
+  <Tab title="audio_end">
+    Sent after all audio chunks for the current turn have been delivered. Signals the server is ready for your next message.
+
+    <ResponseField name="type" type="string" required>
+      Always `"audio_end"`.
+    </ResponseField>
+
+    <ResponseField name="tts_time" type="number" required>
+      Total time in seconds spent on TTS synthesis for the entire turn.
+    </ResponseField>
+
+    ```json audio_end message
+    {
+      "type": "audio_end",
+      "tts_time": 0.48
+    }
+    ```
+
+    <Warning>
+      `audio_end` is not sent when the turn is interrupted. Always handle the case where a new user message arrives or the connection closes before `audio_end`.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Example Python client
+
+The following example is based on the pattern used in `benchmarks/bench.py`. It connects, sends a text message, and collects the full response.
+
+```python client.py
+import asyncio
+import base64
+import json
+
+import websockets
+
+
+async def send_turn(uri: str, wav_path: str = None, jpg_path: str = None, text: str = None):
+    payload = {}
+    if wav_path:
+        payload["audio"] = base64.b64encode(open(wav_path, "rb").read()).decode()
+    if jpg_path:
+        payload["image"] = base64.b64encode(open(jpg_path, "rb").read()).decode()
+    if text and not wav_path and not jpg_path:
+        payload["text"] = text
+
+    async with websockets.connect(uri) as ws:
+        await ws.send(json.dumps(payload))
+
+        pcm_chunks = []
+        sample_rate = None
+
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            msg = json.loads(raw)
+
+            if msg["type"] == "text":
+                print(f"Heard:    {msg.get('transcription', '(no transcription)')}")
+                print(f"Response: {msg['text']}")
+                print(f"LLM:      {msg['llm_time']}s")
+
+            elif msg["type"] == "audio_start":
+                sample_rate = msg["sample_rate"]
+                print(f"Audio: {msg['sentence_count']} sentence(s) at {sample_rate} Hz")
+
+            elif msg["type"] == "audio_chunk":
+                pcm_chunks.append(base64.b64decode(msg["audio"]))
+
+            elif msg["type"] == "audio_end":
+                print(f"TTS: {msg['tts_time']}s  |  total audio: {sum(len(c) for c in pcm_chunks)} bytes")
+                break
+
+        # pcm_chunks contains signed int16 PCM at sample_rate Hz
+        return b"".join(pcm_chunks), sample_rate
+
+
+asyncio.run(send_turn("ws://localhost:8000/ws", text="Tell me a fun fact about the ocean."))
+```

@@ -1,0 +1,144 @@
+---
+title: "Architecture"
+description: "How Parlor's real-time voice and vision pipeline works end-to-end."
+---
+
+Parlor connects a browser-based audio/video interface to an on-device FastAPI server over a persistent WebSocket. Every turn in the conversation flows through voice activity detection, multimodal LLM inference, and sentence-level TTS streaming before audio reaches the browser again.
+
+## System diagram
+
+```
+Browser (mic + camera)
+    │
+    │  WebSocket (audio PCM + JPEG frames)
+    ▼
+FastAPI server
+    ├── Gemma 4 E2B via LiteRT-LM (GPU)  →  understands speech + vision
+    └── Kokoro TTS (MLX on Mac, ONNX on Linux)  →  speaks back
+    │
+    │  WebSocket (streamed audio chunks)
+    ▼
+Browser (playback + transcript)
+```
+
+## Components
+
+<CardGroup cols={3}>
+  <Card title="Browser" icon="globe">
+    Silero VAD, camera capture, audio encoding, WebSocket client, and audio playback.
+  </Card>
+  <Card title="FastAPI server" icon="server">
+    WebSocket endpoint, multimodal content assembly, LiteRT-LM inference, and TTS streaming.
+  </Card>
+  <Card title="On-device models" icon="microchip">
+    Gemma 4 E2B for speech and vision understanding; Kokoro TTS for speech synthesis.
+  </Card>
+</CardGroup>
+
+## Request lifecycle
+
+<Steps>
+  <Step title="Voice activity detection">
+    The browser runs [Silero VAD](https://github.com/ricky0123/vad) continuously. When speech is detected, the browser captures a JPEG frame from the camera and encodes the audio segment as a WAV file. Both are base64-encoded and sent together in a single WebSocket message.
+
+    ```json
+    {
+      "audio": "<base64-encoded WAV>",
+      "image": "<base64-encoded JPEG>"
+    }
+    ```
+  </Step>
+  <Step title="Server receives the message">
+    The server decodes the base64 payloads, writes them to temporary files, and assembles a multimodal content list for the LLM.
+
+    ```python
+    content = [
+        {"type": "audio", "path": "/tmp/audio.wav"},
+        {"type": "image", "path": "/tmp/frame.jpg"},
+        {"type": "text",  "text": "The user just spoke to you (audio) while showing their camera (image). Respond to what they said, referencing what you see if relevant."},
+    ]
+    ```
+
+    The text prompt varies depending on what was provided:
+
+    | Payload | Prompt appended |
+    | ------- | --------------- |
+    | Audio + image | Describes both modalities, asks to reference camera if relevant |
+    | Audio only | "The user just spoke to you. Respond to what they said." |
+    | Image only | "The user is showing you their camera. Describe what you see." |
+    | Text only | Passes the raw text through |
+  </Step>
+  <Step title="LLM inference">
+    The server calls `conversation.send_message()` in a thread pool executor to avoid blocking the event loop. Gemma 4 E2B processes the audio, image, and text content and is required by the system prompt to call the `respond_to_user` tool.
+
+    The tool call captures two fields:
+
+    ```python
+    def respond_to_user(transcription: str, response: str) -> str:
+        """
+        transcription: Exact transcription of what the user said.
+        response: Conversational reply. Keep it to 1-4 short sentences.
+        """
+    ```
+
+    If the model returns raw text instead of a tool call (fallback), the server uses the first text content block directly.
+  </Step>
+  <Step title="Text response sent to browser">
+    Before TTS begins, the server sends a `text` message so the browser can display the transcript and response immediately.
+
+    ```json
+    {
+      "type": "text",
+      "text": "Sure, that looks like a French press...",
+      "transcription": "What is that thing on my desk?",
+      "llm_time": 1.93
+    }
+    ```
+  </Step>
+  <Step title="Sentence-level TTS streaming">
+    The response text is split into sentences using the regex `(?<=[.!?])\s+`. The server signals the start of the audio stream, then synthesizes and sends each sentence as it completes — audio starts playing in the browser before the full response is generated.
+
+    ```json
+    { "type": "audio_start", "sample_rate": 24000, "sentence_count": 3 }
+
+    { "type": "audio_chunk", "audio": "<base64 int16 PCM>", "index": 0 }
+    { "type": "audio_chunk", "audio": "<base64 int16 PCM>", "index": 1 }
+    { "type": "audio_chunk", "audio": "<base64 int16 PCM>", "index": 2 }
+
+    { "type": "audio_end", "tts_time": 0.42 }
+    ```
+
+    Audio chunks are 16-bit PCM at 24 000 Hz, encoded as base64.
+  </Step>
+</Steps>
+
+## Barge-in (interruption)
+
+Each WebSocket connection owns an `asyncio.Event` called `interrupted`. A dedicated receiver coroutine runs concurrently and watches for interrupt signals from the browser.
+
+```json
+{ "type": "interrupt" }
+```
+
+When this message arrives, `interrupted.set()` is called immediately. The server checks the event at three points in the pipeline:
+
+1. After LLM inference — skips sending the response entirely.
+2. Before TTS begins — skips all audio synthesis.
+3. Between TTS sentences — stops mid-stream without sending `audio_end`.
+
+<Note>
+  The LLM inference itself is not cancellable mid-flight because it runs in a thread pool executor. Interruption takes effect as soon as the current operation finishes.
+</Note>
+
+## Per-connection conversation history
+
+Each WebSocket connection creates its own `conversation` object via `engine.create_conversation()`, initialized with the system prompt and the `respond_to_user` tool definition. Message history is maintained for the lifetime of the connection, giving the model context across multiple turns.
+
+```python
+conversation = engine.create_conversation(
+    messages=[{"role": "system", "content": SYSTEM_PROMPT}],
+    tools=[respond_to_user],
+)
+```
+
+When the WebSocket disconnects, `conversation.__exit__()` is called to release resources.

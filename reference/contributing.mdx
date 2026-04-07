@@ -1,0 +1,113 @@
+---
+title: "Contributing"
+description: "Project structure, dependencies, and how to contribute to Parlor."
+---
+
+<Warning>
+  Parlor is a research preview. Expect rough edges and bugs. APIs and internals may change without notice.
+</Warning>
+
+## Project structure
+
+```
+parlor/
+└── src/
+    ├── server.py           # FastAPI server, WebSocket handler, Gemma 4 inference
+    ├── tts.py              # Platform-aware TTS (MLX on Apple Silicon, ONNX on Linux)
+    ├── index.html          # Browser frontend (VAD, camera, WebSocket, audio playback)
+    ├── pyproject.toml      # Project metadata and dependencies
+    └── benchmarks/
+        ├── bench.py        # End-to-end WebSocket latency benchmark
+        └── benchmark_tts.py  # TTS backend comparison (mlx-audio vs kokoro-onnx)
+```
+
+- **`server.py`** is the entry point. It loads Gemma 4 E2B via LiteRT-LM and Kokoro TTS, then serves the WebSocket API and the HTML frontend.
+- **`tts.py`** abstracts over two Kokoro backends: `mlx-audio` (Apple GPU via MLX) and `kokoro-onnx` (ONNX Runtime, CPU). The right backend is selected automatically at startup based on the platform.
+- **`index.html`** is a self-contained single-page app. It uses [Silero VAD](https://github.com/ricky0123/vad) for hands-free voice activity detection and handles sentence-level audio streaming from the server.
+
+## Key dependencies
+
+| Package | Platform | Purpose |
+|---|---|---|
+| `litert-lm` | all | LiteRT-LM engine for Gemma 4 E2B inference |
+| `fastapi` | all | HTTP and WebSocket server framework |
+| `uvicorn` | all | ASGI server |
+| `numpy` | all | PCM audio conversion |
+| `websockets` | all | WebSocket client (benchmarks) |
+| `pillow` | all | JPEG image creation (benchmarks) |
+| `kokoro-onnx` | Linux | ONNX Runtime TTS backend |
+| `mlx-audio` | macOS | Apple GPU TTS backend via MLX |
+| `misaki[en]` | macOS | English phonemizer for mlx-audio |
+| `num2words` | macOS | Number-to-words for mlx-audio |
+
+Python 3.12 is required. Python 3.13+ is not supported due to LiteRT-LM constraints.
+
+## Development workflow
+
+<Steps>
+  <Step title="Fork and clone">
+    Fork the repository on GitHub, then clone your fork:
+
+    ```bash
+    git clone https://github.com/<your-username>/parlor.git
+    cd parlor
+    ```
+  </Step>
+  <Step title="Install uv">
+    If you do not have `uv` installed:
+
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
+  </Step>
+  <Step title="Sync dependencies">
+    ```bash
+    cd src
+    uv sync
+    ```
+
+    This creates a virtual environment and installs all dependencies for your platform.
+  </Step>
+  <Step title="Run the server">
+    ```bash
+    uv run server.py
+    ```
+
+    Open [http://localhost:8000](http://localhost:8000) to verify the UI loads and the models are working.
+  </Step>
+  <Step title="Run the benchmarks">
+    With the server running in another terminal:
+
+    ```bash
+    uv run python benchmarks/bench.py
+    ```
+
+    See [Benchmarks](/reference/benchmarks) for more detail on what the scripts measure.
+  </Step>
+</Steps>
+
+## Platform requirements
+
+| Requirement | Detail |
+|---|---|
+| Python | 3.12 (exactly — not 3.11 or 3.13) |
+| macOS | Apple Silicon (M-series) for `mlx-audio` GPU acceleration |
+| Linux | A supported GPU for Gemma 4 E2B inference via LiteRT-LM |
+| RAM | ~3 GB free for the LLM model |
+
+<Tip>
+  On Apple Silicon you can force the ONNX TTS backend instead of mlx-audio by setting `KOKORO_ONNX=1` before starting the server. This is useful for isolating TTS performance differences.
+</Tip>
+
+## Acknowledgements
+
+Parlor is built on top of the following open-source projects and models:
+
+- [Gemma 4](https://ai.google.dev/gemma) by Google DeepMind
+- [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) by Google AI Edge
+- [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) TTS by Hexgrad
+- [Silero VAD](https://github.com/snakers4/silero-vad) for browser voice activity detection
+
+## License
+
+Parlor is released under the [Apache 2.0 License](https://www.apache.org/licenses/LICENSE-2.0).
